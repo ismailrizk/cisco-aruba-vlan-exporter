@@ -21,7 +21,7 @@ A Python tool that connects to **Cisco** and **Aruba AOS-CX** switches via SSH, 
 - Clean terminal table output with Active / Shutdown summary
 - Auto-named Excel export: `vlan_export_<IP>_<timestamp>.xlsx`
 - Graceful error handling for failed connections and empty results
-- 132 lines of code
+
 
 ---
 
