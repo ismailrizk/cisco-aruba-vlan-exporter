@@ -1,78 +1,22 @@
-# Cisco VLAN to Excel Exporter
+VLAN Configuration Exporter
+A Python tool that connects to Cisco and Aruba AOS-CX switches via SSH, extracts all VLAN SVI (Layer 3) interface data, displays it in a clean terminal table, and exports it to a timestamped Excel file.
 
-Simple Python script to extract VLAN interface data from Cisco switches via SSH and export to Excel.
+Supported Vendors
+VendorOptionPlatformCisco IOS / IOS-XEciscoAny Cisco Layer 3 switchAruba AOS-CXaruba_cx8xxx / 6xxx / 4xxx series
 
-## Features
+Features
 
-- Connect to Cisco switches via SSH
-- Extract VLAN interface configurations
-- Parse HSRP/VRRP standby information
-- Export data to Excel spreadsheet
-- Simple command-line interface
+SSH connection using Netmiko
+Extracts VLAN, IP Address, Subnet Mask, Virtual IP, Priority, Preempt, Status
+Detects HSRP (Cisco) and Active-Gateway / VRRP (Aruba CX) virtual IPs
+Clean terminal table output with Active / Shutdown summary
+Auto-named Excel export: vlan_export_<IP>_<timestamp>.xlsx
+Graceful error handling for failed connections and empty results
+132 lines of code
 
-## Prerequisites
 
-- Python 3.7 or higher
-- SSH access to Cisco switch
-- User credentials with privilege to view running-config
+Requirements
+bashpip install netmiko pandas openpyxl
 
-## Installation
-
-1. Clone the repository:
-```bash
-git clone https://github.com/ismailrizk/cisco-vlan-to-excel.git
-cd cisco-vlan-to-excel
-```
-
-2. Install required packages:
-```bash
-pip install -r requirements.txt
-```
-
-## Usage
-
-Run the script:
-```bash
-python simple_vlan_to_excel.py
-```
-
-The script will prompt you for:
-- Switch IP address
-- Username
-- Password (hidden input)
-
-Output file: `vlan_data.xlsx`
-
-## Example Output
-
-The Excel file will contain columns:
-- VLAN (e.g., Vlan5, Vlan6)
-- IP_Address
-- Subnet_Mask
-- Standby_IP (HSRP virtual IP)
-- Priority (HSRP priority)
-- Preempt (Yes/No)
-- Status (Active/Shutdown)
-
-## Supported Devices
-
-- Cisco IOS switches
-- Cisco IOS-XE switches
-- Any Cisco device supporting SSH and standard show commands
-
-## Troubleshooting
-
-### Connection Timeout
-- Increase timeout values in the script
-- Check network connectivity
-- Verify SSH is enabled on switch
-
-### Authentication Failed
-- Verify username and password
-- Check user privilege level
-- Ensure SSH is configured correctly
-
-### Command Not Found
-- Script will fallback to full `show running-config`
-- Some older IOS versions may not support `section` command
-
+Usage
+bashpython vlan_exporter.py
