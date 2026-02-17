@@ -1,96 +1,132 @@
 from netmiko import ConnectHandler
 import pandas as pd
-import re
-import getpass
+import re, getpass, sys
+from datetime import datetime
 
-def connect_switch(ip, user, pwd):
-    device = {
-        'device_type': 'cisco_ios',
-        'host': ip,
-        'username': user,
-        'password': pwd,
-        'timeout': 60,
-        'session_timeout': 60,
-    }
-    return ConnectHandler(**device)
+VENDORS = {'cisco': 'cisco_ios', 'aruba_cx': 'aruba_aoscx'}
 
-def get_vlan_data(connection):
-    
+
+def connect(ip, user, pwd, vendor):
+    return ConnectHandler(
+        device_type=VENDORS[vendor], host=ip,
+        username=user, password=pwd,
+        timeout=60, session_timeout=60,
+    )
+
+
+def prefix_to_mask(prefix):
+    if prefix == 0: return '0.0.0.0'
+    bits = (0xFFFFFFFF >> (32 - prefix)) << (32 - prefix)
+    return '.'.join(str((bits >> (8 * i)) & 0xFF) for i in reversed(range(4)))
+
+
+def parse_cisco(conn):
     try:
-        output = connection.send_command(
-            'show running-config | section interface Vlan',
-            read_timeout=120,
-            expect_string=r'#'
-        )
+        raw = conn.send_command('show running-config | section interface Vlan', read_timeout=120, expect_string=r'#')
+    except Exception:
+        raw = conn.send_command('show running-config', read_timeout=120)
+
+    vlans = []
+    for block in re.split(r'\ninterface ', raw):
+        if not block.startswith('Vlan'): continue
+        v = {}
+        m = re.search(r'Vlan(\d+)', block)
+        if m: v['VLAN'] = f"Vlan{m.group(1)}"
+        m = re.search(r'ip address (\S+) (\S+)', block)
+        if m: v['IP Address'], v['Subnet Mask'] = m.group(1), m.group(2)
+        m = re.search(r'standby \d+ ip (\S+)', block)
+        if m: v['Virtual IP'] = m.group(1)
+        m = re.search(r'standby \d+ priority (\d+)', block)
+        if m: v['Priority'] = m.group(1)
+        v['Preempt'] = 'Yes' if 'preempt' in block else 'No'
+        v['Status']  = 'Shutdown' if 'shutdown' in block else 'Active'
+        vlans.append(v)
+    return vlans
+
+
+def parse_aruba_cx(conn):
+    raw = conn.send_command('show running-config', read_timeout=120)
+
+    vlans = []
+    for block in re.split(r'(?=^interface vlan\d)', raw, flags=re.MULTILINE):
+        if not re.match(r'interface vlan\d', block, re.IGNORECASE): continue
+        v = {}
+        m = re.match(r'interface vlan(\d+)', block, re.IGNORECASE)
+        if m: v['VLAN'] = f"Vlan{m.group(1)}"
+        m = re.search(r'ip address (\d+\.\d+\.\d+\.\d+)/(\d+)', block)
+        if m: v['IP Address'], v['Subnet Mask'] = m.group(1), prefix_to_mask(int(m.group(2)))
+        m = re.search(r'active-gateway ip\s+(\d+\.\d+\.\d+\.\d+)\b', block)
+        if m: v['Virtual IP'] = m.group(1)
+        m = re.search(r'^\s+address\s+(\d+\.\d+\.\d+\.\d+)', block, re.MULTILINE)
+        if m: v['Virtual IP'] = m.group(1)
+        m = re.search(r'^\s+priority\s+(\d+)', block, re.MULTILINE)
+        if m: v['Priority'] = m.group(1)
+        v['Preempt'] = 'Yes' if re.search(r'^\s+preempt\b', block, re.MULTILINE) else 'No'
+        v['Status']  = 'Shutdown' if re.search(r'(?<!no )shutdown', block) else 'Active'
+        vlans.append(v)
+    return vlans
+
+
+PARSERS = {'cisco': parse_cisco, 'aruba_cx': parse_aruba_cx}
+COLS    = ['VLAN', 'IP Address', 'Subnet Mask', 'Virtual IP', 'Priority', 'Preempt', 'Status']
+
+
+def export(data, filename):
+    pd.DataFrame(data, columns=COLS).to_excel(filename, index=False)
+
+
+def print_table(vlans):
+    widths = {c: max(len(c), max((len(str(v.get(c, ''))) for v in vlans), default=0)) for c in COLS}
+    sep    = "+" + "+".join("-" * (widths[c] + 2) for c in COLS) + "+"
+    header = "|" + "|".join(f" {c:<{widths[c]}} " for c in COLS) + "|"
+    print(sep); print(header); print(sep)
+    for v in vlans:
+        print("|" + "|".join(f" {str(v.get(c, '')):<{widths[c]}} " for c in COLS) + "|")
+    print(sep)
+
+
+if __name__ == '__main__':
+    print()
+    print("╔══════════════════════════════════════════════╗")
+    print("║        VLAN Configuration Exporter           ║")
+    print("║           Cisco  |  Aruba AOS-CX             ║")
+    print("╚══════════════════════════════════════════════╝")
+    print()
+
+    SWITCH_IP = input("  Switch IP Address : ").strip()
+    print("  Vendor options    : cisco | aruba_cx")
+    VENDOR    = input("  Vendor            : ").strip().lower()
+
+    if VENDOR not in VENDORS:
+        print(f"\n  [ERROR] Unknown vendor '{VENDOR}'. Choose: cisco | aruba_cx")
+        sys.exit(1)
+
+    USERNAME = input("  Username          : ").strip()
+    PASSWORD = getpass.getpass("  Password          : ")
+
+    print(f"\n  Connecting to {SWITCH_IP} ...")
+    try:
+        conn = connect(SWITCH_IP, USERNAME, PASSWORD, VENDOR)
     except Exception as e:
-        print(f"Error getting config: {e}")
-        print("Trying alternative command...")
-        output = connection.send_command('show running-config', read_timeout=120)
-    
-    vlan_list = []
-    interfaces = re.split(r'\ninterface ', output)
-    
-    for interface in interfaces:
-        if interface.startswith('Vlan'):
-            vlan = {}
-            
-            
-            vlan_num = re.search(r'Vlan(\d+)', interface)
-            if vlan_num:
-                vlan['VLAN'] = f"Vlan{vlan_num.group(1)}"
-            
-            
-            ip = re.search(r'ip address (\S+) (\S+)', interface)
-            if ip:
-                vlan['IP_Address'] = ip.group(1)
-                vlan['Subnet_Mask'] = ip.group(2)
-            
-            
-            standby_ip = re.search(r'standby \d+ ip (\S+)', interface)
-            if standby_ip:
-                vlan['Standby_IP'] = standby_ip.group(1)
-            
-            
-            priority = re.search(r'standby \d+ priority (\d+)', interface)
-            if priority:
-                vlan['Priority'] = priority.group(1)
-            
-            
-            vlan['Preempt'] = 'Yes' if 'preempt' in interface else 'No'
-            
-            
-            vlan['Status'] = 'Shutdown' if 'shutdown' in interface else 'Active'
-            
-            vlan_list.append(vlan)
-    
-    return vlan_list
+        print(f"\n  [ERROR] Connection failed: {e}")
+        sys.exit(1)
 
-def export_to_excel(data, filename='vlan_data.xlsx'):
-    df = pd.DataFrame(data)
-    df.to_excel(filename, index=False)
-    print(f"Data exported to {filename}")
+    print("  Connected successfully.")
+    print("  Retrieving VLAN data ...")
 
+    vlans = PARSERS[VENDOR](conn)
+    conn.disconnect()
 
-print("=" * 50)
-print("Cisco VLAN to Excel Exporter")
-print("=" * 50)
+    if not vlans:
+        print("\n  No VLAN interfaces found on this device.")
+        sys.exit(0)
 
+    active   = sum(1 for v in vlans if v.get('Status') == 'Active')
+    shutdown = len(vlans) - active
+    print(f"\n  Found {len(vlans)} VLAN(s)  —  {active} Active  /  {shutdown} Shutdown\n")
+    print_table(vlans)
 
-SWITCH_IP = input("Enter switch IP address: ")
-USERNAME = input("Enter username: ")
-PASSWORD = getpass.getpass("Enter password: ")
-
-print("\nConnecting to switch...")
-conn = connect_switch(SWITCH_IP, USERNAME, PASSWORD)
-
-print("Getting VLAN data...")
-vlans = get_vlan_data(conn)
-
-print(f"Found {len(vlans)} VLAN interfaces")
-for v in vlans:
-    print(f"{v.get('VLAN')}: {v.get('IP_Address')} - {v.get('Status')}")
-
-export_to_excel(vlans)
-
-conn.disconnect()
-print("Done!")
+    filename = f"vlan_export_{SWITCH_IP}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    export(vlans, filename)
+    print(f"\n  Export saved to: {filename}")
+    print("  Done.\n")
